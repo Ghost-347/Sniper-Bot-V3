@@ -3,18 +3,18 @@
 //|                                  Copyright 2024, Quant Engineer  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version   "15.00"
+#property version   "16.00"
 #property strict
 
 //--- Inputs
-input double InpLotSize = 0.1;      // Lot Size
-input int    InpSL      = 250;      // Stop Loss (Points)
-input int    InpTP      = 750;      // Take Profit (Points)
-input int    InpMaxLoss = 3;        // Max Consecutive Losses
-input int    InpSwing   = 15;       // Swing Period
-input double InpFib     = 0.618;    // Fib Level (0.618)
-input int    InpATR     = 14;       // ATR Period
-input double InpMinATR  = 60;       // Min ATR (Points)
+input double LotSize      = 0.1;
+input int    SL_Points    = 250;
+input int    TP_Points    = 750;
+input int    MaxLosses    = 3;
+input int    SwingPeriod  = 15;
+input double FibLevel     = 0.618;
+input int    ATR_Period   = 14;
+input double Min_ATR      = 60;
 
 //--- Globals
 int    hATR = -1;
@@ -22,77 +22,61 @@ int    hMA  = -1;
 bool   paused = false;
 long   magic = 123456;
 
-//+------------------------------------------------------------------+
-int OnInit()
-{
-   hATR = iATR(_Symbol, PERIOD_CURRENT, InpATR);
+int OnInit() {
+   hATR = iATR(_Symbol, PERIOD_CURRENT, ATR_Period);
    hMA  = iMA(_Symbol, PERIOD_H4, 200, 0, MODE_EMA, PRICE_CLOSE);
-   
-   if(hATR == -1 || hMA == -1) return(INIT_FAILED);
-   return(INIT_SUCCEEDED);
+   if(hATR == -1 || hMA == -1) return(1); 
+   return(0); 
 }
 
-//+------------------------------------------------------------------+
-void OnDeinit(const int reason)
-{
+void OnDeinit(const int reason) {
    if(hATR != -1) IndicatorRelease(hATR);
    if(hMA != -1) IndicatorRelease(hMA);
    Comment("");
 }
 
-//+------------------------------------------------------------------+
-void OnTick()
-{
+void OnTick() {
    if(paused) return;
 
-   // 1. Loss Safeguard
-   if(HistorySelect(TimeCurrent()-259200, TimeCurrent()))
-   {
-      int l = 0;
-      int total = HistoryDealsTotal();
-      for(int i=total-1; i>=0; i--)
-      {
+   // 1. Loss Protection
+   if(HistorySelect(TimeCurrent()-259200, TimeCurrent())) {
+      int losses = 0;
+      int total_d = HistoryDealsTotal();
+      for(int i=total_d-1; i>=0; i--) {
          ulong t = HistoryDealGetTicket(i);
-         if(HistoryDealGetSymbol(t) == _Symbol && HistoryDealGetInteger(t, DEAL_MAGIC) == magic)
-         {
-            if(HistoryDealGetInteger(t, DEAL_ENTRY) == 1) // 1 = DEAL_ENTRY_OUT
-            {
-               if(HistoryDealGetDouble(t, DEAL_PROFIT) < 0) l++;
-               else if(HistoryDealGetDouble(t, DEAL_PROFIT) > 0) break;
+         if(HistoryDealGetSymbol(t) == _Symbol && HistoryDealGetInteger(t, 10) == magic) { 
+            if(HistoryDealGetInteger(t, 4) == 1) { 
+               if(HistoryDealGetDouble(t, 13) < 0) losses++; 
+               else if(HistoryDealGetDouble(t, 13) > 0) break;
             }
          }
       }
-      if(l >= InpMaxLoss) { paused = true; return; }
+      if(losses >= MaxLosses) { paused = true; return; }
    }
 
-   // 2. Manage Positions (Profit Trap)
+   // 2. Trailing Stop
    int total_p = PositionsTotal();
-   for(int i=total_p-1; i>=0; i--)
-   {
-      if(PositionGetSymbol(i) == _Symbol)
-      {
-         if(PositionGetInteger(POSITION_MAGIC) == magic)
-         {
-            ulong  ticket = PositionGetInteger(POSITION_TICKET);
-            double op     = PositionGetDouble(POSITION_PRICE_OPEN);
-            double cp     = PositionGetDouble(POSITION_PRICE_CURRENT);
-            double sl     = PositionGetDouble(POSITION_SL);
-            double tp     = PositionGetDouble(POSITION_TP);
-            long   type   = PositionGetInteger(POSITION_TYPE);
+   for(int i=total_p-1; i>=0; i--) {
+      string sym = PositionGetSymbol(i);
+      if(sym == _Symbol) {
+         if(PositionGetInteger(5) == magic) { 
+            ulong  ticket = PositionGetInteger(0); 
+            double op     = PositionGetDouble(1); 
+            double cp     = PositionGetDouble(6); 
+            double sl     = PositionGetDouble(3); 
+            double tp     = PositionGetDouble(4); 
+            long   type   = PositionGetInteger(7); 
             
-            if(tp > 0)
-            {
+            if(tp > 0) {
                double d = MathAbs(tp - op);
-               if(MathAbs(cp - op) >= d * 0.5)
-               {
-                  double nsl = (type == 0) ? op + (d * 0.3) : op - (d * 0.3); // 0 = POSITION_TYPE_BUY
-                  bool better = (type == 0 && nsl > sl) || (type == 1 && (nsl < sl || sl <= 0)); // 1 = POSITION_TYPE_SELL
-                  if(better)
-                  {
-                     MqlTradeRequest req; MqlTradeResult res;
-                     req.action = 6; // 6 = TRADE_ACTION_SLTP
-                     req.position = ticket; req.symbol = _Symbol; req.sl = nsl; req.tp = tp;
-                     OrderSend(req, res);
+               if(MathAbs(cp - op) >= d * 0.5) {
+                  double nsl = (type == 0) ? op + (d * 0.3) : op - (d * 0.3); 
+                  bool better = (type == 0 && nsl > sl) || (type == 1 && (nsl < sl || sl <= 0));
+                  if(better) {
+                     MqlTradeRequest r; MqlTradeResult res;
+                     r.action = 6; 
+                     r.position = ticket; r.symbol = _Symbol; r.sl = nsl; r.tp = tp;
+                     OrderSend(r, res);
                   }
                }
             }
@@ -100,66 +84,56 @@ void OnTick()
       }
    }
 
-   // 3. Entry Logic
+   // 3. Entry
    bool active = false;
-   for(int i=0; i<PositionsTotal(); i++)
-   {
-      if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic) active = true;
+   for(int i=0; i<PositionsTotal(); i++) {
+      if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(5) == magic) active = true;
    }
    
-   if(!active)
-   {
+   if(!active) {
       double atr_b[]; ArraySetAsSeries(atr_b, true);
-      if(CopyBuffer(hATR, 0, 0, 1, atr_b) > 0 && atr_b[0] >= InpMinATR * _Point)
-      {
-         double h_b[], l_b[], c_b[], ma_b[], h4c_b[];
-         ArraySetAsSeries(h_b, true); ArraySetAsSeries(l_b, true); ArraySetAsSeries(c_b, true);
-         
-         if(CopyHigh(_Symbol, PERIOD_CURRENT, 0, InpSwing+1, h_b) >= InpSwing+1 &&
-            CopyLow(_Symbol, PERIOD_CURRENT, 0, InpSwing+1, l_b) >= InpSwing+1 &&
-            CopyClose(_Symbol, PERIOD_CURRENT, 0, 1, c_b) >= 1 &&
+      if(CopyBuffer(hATR, 0, 0, 1, atr_b) > 0 && atr_b[0] >= Min_ATR * _Point) {
+         double h[], l[], c[], ma_b[], h4c[];
+         ArraySetAsSeries(h, true); ArraySetAsSeries(l, true); ArraySetAsSeries(c, true);
+         if(CopyHigh(_Symbol, PERIOD_CURRENT, 0, SwingPeriod+1, h) >= SwingPeriod+1 &&
+            CopyLow(_Symbol, PERIOD_CURRENT, 0, SwingPeriod+1, l) >= SwingPeriod+1 &&
+            CopyClose(_Symbol, PERIOD_CURRENT, 0, 1, c) >= 1 &&
             CopyBuffer(hMA, 0, 0, 1, ma_b) > 0 &&
-            CopyClose(_Symbol, PERIOD_H4, 0, 1, h4c_b) > 0)
-         {
-            int hi = ArrayMaximum(h_b, 1, InpSwing);
-            int lo = ArrayMinimum(l_b, 1, InpSwing);
+            CopyClose(_Symbol, PERIOD_H4, 0, 1, h4c) > 0) {
             
-            if(hi >= 0 && lo >= 0)
-            {
-               double mx=0, mn=0;
+            int hi = ArrayMaximum(h, 1, SwingPeriod);
+            int lo = ArrayMinimum(l, 1, SwingPeriod);
+            
+            if(hi >= 0 && lo >= 0) {
                double h_f[], l_f[];
-               if(CopyHigh(_Symbol, PERIOD_M5, 0, 100, h_f) == 100 && CopyLow(_Symbol, PERIOD_M5, 0, 100, l_f) == 100)
-               {
-                  mx = h_f[ArrayMaximum(h_f, 0, 100)];
-                  mn = l_f[ArrayMinimum(l_f, 0, 100)];
-                  double fb = mn + (mx - mn) * InpFib;
-                  double fs = mx - (mx - mn) * InpFib;
+               if(CopyHigh(_Symbol, PERIOD_M5, 0, 100, h_f) == 100 && CopyLow(_Symbol, PERIOD_M5, 0, 100, l_f) == 100) {
+                  double mx = h_f[0]; for(int j=1; j<100; j++) if(h_f[j]>mx) mx=h_f[j];
+                  double mn = l_f[0]; for(int j=1; j<100; j++) if(l_f[j]<mn) mn=l_f[j];
+                  double fb = mn + (mx-mn)*FibLevel;
+                  double fs = mx - (mx-mn)*FibLevel;
 
-                  if(c_b[0] > l_b[lo] && l_b[0] < l_b[lo] && h4c_b[0] > ma_b[0])
-                  {
-                     if(MathAbs(c_b[0]-fb) < 150*_Point) Exec(0, Lot_Size, c_b[0]-InpSL*_Point, c_b[0]+InpTP*_Point);
+                  if(c[0] > l[lo] && l[0] < l[lo] && h4c[0] > ma_b[0] && MathAbs(c[0]-fb) < 150*_Point) {
+                     SendOrder(0, LotSize, c[0]-SL_Points*_Point, c[0]+TP_Points*_Point);
                   }
-                  else if(c_b[0] < h_b[hi] && h_b[0] > h_b[hi] && h4c_b[0] < ma_b[0])
-                  {
-                     if(MathAbs(c_b[0]-fs) < 150*_Point) Exec(1, Lot_Size, c_b[0]+InpSL*_Point, c_b[0]-InpTP*_Point);
+                  else if(c[0] < h[hi] && h[0] > h[hi] && h4c[0] < ma_b[0] && MathAbs(c[0]-fs) < 150*_Point) {
+                     SendOrder(1, LotSize, c[0]+SL_Points*_Point, c[0]-TP_Points*_Point);
                   }
                }
             }
          }
       }
    }
-   Comment("XAU Sniper\nStatus: "+(paused?"PAUSED":"ACTIVE"));
+   Comment("Status: "+(paused?"PAUSED":"ACTIVE"));
 }
 
-//+------------------------------------------------------------------+
-void Exec(int type, double v, double sl, double tp)
-{
+void SendOrder(int type, double v, double sl, double tp) {
    MqlTradeRequest r; MqlTradeResult res;
-   r.action = 1; // 1 = TRADE_ACTION_DEAL
+   ZeroMemory(r);
+   r.action = 1; 
    r.symbol = _Symbol; r.volume = v; r.magic = magic;
-   r.type = (type == 0) ? 0 : 1; // 0=Buy, 1=Sell
-   r.price = (type == 0) ? SymbolInfoDouble(_Symbol, 9) : SymbolInfoDouble(_Symbol, 11); // 9=Ask, 11=Bid
+   r.type = (type == 0) ? 0 : 1; 
+   r.price = (type == 0) ? SymbolInfoDouble(_Symbol, 9) : SymbolInfoDouble(_Symbol, 11); 
    r.sl = sl; r.tp = tp; r.deviation = 10;
-   r.type_filling = 1; // 1 = ORDER_FILLING_IOC
-   if(!OrderSend(r, res)) { r.type_filling = 2; OrderSend(r, res); } // 2 = ORDER_FILLING_FOK
+   r.type_filling = 1; 
+   if(!OrderSend(r, res)) { r.type_filling = 2; OrderSend(r, res); } 
 }
