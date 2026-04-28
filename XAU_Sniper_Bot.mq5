@@ -5,13 +5,13 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Quant Engineer"
 #property link      "https://www.mql5.com"
-#property version   "1.80"
+#property version   "1.90"
 #property strict
 
 //--- Includes
 #include <Trade\Trade.mqh>
 
-//--- Input Parameters
+//--- Input Parameters (No 'group' keyword for maximum compatibility)
 input double   InpLotSize        = 0.1;      // Fixed Lot Size
 input int      InpStopLossPips   = 250;      // Initial Stop Loss (Points)
 input int      InpTakeProfitPips = 750;      // Take Profit (Points)
@@ -61,14 +61,14 @@ int OnInit()
    
    if(handleATR == INVALID_HANDLE || handleMA_H4 == INVALID_HANDLE)
    {
-      Print("Error initializing indicators");
+      Print("Error: Failed to initialize indicators.");
       return(INIT_FAILED);
    }
    
    CreateDashboard();
    EventSetTimer(1);
    
-   Print(botName, " V1.80 initialized on ", _Symbol);
+   Print(botName, " V1.90 initialized on ", _Symbol);
    return(INIT_SUCCEEDED);
 }
 
@@ -101,7 +101,7 @@ void OnTick()
    if(consecutiveLosses >= InpMaxLosses)
    {
       isPaused = true;
-      if(InpSendPush) SendNotification(botName + ": Paused on " + _Symbol + " after " + IntegerToString(consecutiveLosses) + " losses.");
+      if(InpSendPush) SendNotification(botName + ": Safeguard activated on " + _Symbol + ". Bot paused.");
       UpdateDashboard();
       return;
    }
@@ -131,7 +131,7 @@ void OnTimer()
 //+------------------------------------------------------------------+
 bool PositionExists()
 {
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   for(int i = 0; i < PositionsTotal(); i++)
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket > 0)
@@ -153,7 +153,7 @@ void CheckForSniperEntry()
 {
    // A. Adaptive Volatility Filter (ATR)
    double atrValue = GetIndicatorValue(handleATR, 0);
-   if(atrValue <= 0 || atrValue < InpMinATR * _Point) return;
+   if(atrValue <= 0 || atrValue < (InpMinATR * _Point)) return;
 
    // B. Trend Filter (H4 MA)
    bool trendBullish = true;
@@ -170,8 +170,8 @@ void CheckForSniperEntry()
    ArraySetAsSeries(lowSeries, true);
    ArraySetAsSeries(closeSeries, true);
    
-   if(CopyHigh(_Symbol, PERIOD_CURRENT, 0, InpSwingPeriod + 1, highSeries) < InpSwingPeriod + 1) return;
-   if(CopyLow(_Symbol, PERIOD_CURRENT, 0, InpSwingPeriod + 1, lowSeries) < InpSwingPeriod + 1) return;
+   if(CopyHigh(_Symbol, PERIOD_CURRENT, 0, InpSwingPeriod + 1, highSeries) < (InpSwingPeriod + 1)) return;
+   if(CopyLow(_Symbol, PERIOD_CURRENT, 0, InpSwingPeriod + 1, lowSeries) < (InpSwingPeriod + 1)) return;
    if(CopyClose(_Symbol, PERIOD_CURRENT, 0, 1, closeSeries) < 1) return;
 
    int maxIdx = ArrayMaximum(highSeries, 1, InpSwingPeriod);
@@ -193,10 +193,10 @@ void CheckForSniperEntry()
    // SNIPE BUY
    if(currentLow < swingLow && currentClose > swingLow && trendBullish)
    {
-      if(fibPriceBuy > 0 && MathAbs(currentClose - fibPriceBuy) < 150 * _Point)
+      if(fibPriceBuy > 0 && MathAbs(currentClose - fibPriceBuy) < (150 * _Point))
       {
-         double sl = currentClose - InpStopLossPips * _Point;
-         double tp = currentClose + InpTakeProfitPips * _Point;
+         double sl = currentClose - (InpStopLossPips * _Point);
+         double tp = currentClose + (InpTakeProfitPips * _Point);
          double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
          trade.Buy(InpLotSize, _Symbol, ask, sl, tp, "Sniper Buy");
       }
@@ -205,10 +205,10 @@ void CheckForSniperEntry()
    // SNIPE SELL
    if(currentHigh > swingHigh && currentClose < swingHigh && !trendBullish)
    {
-      if(fibPriceSell > 0 && MathAbs(currentClose - fibPriceSell) < 150 * _Point)
+      if(fibPriceSell > 0 && MathAbs(currentClose - fibPriceSell) < (150 * _Point))
       {
-         double sl = currentClose + InpStopLossPips * _Point;
-         double tp = currentClose - InpTakeProfitPips * _Point;
+         double sl = currentClose + (InpStopLossPips * _Point);
+         double tp = currentClose - (InpTakeProfitPips * _Point);
          double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
          trade.Sell(InpLotSize, _Symbol, bid, sl, tp, "Sniper Sell");
       }
@@ -244,8 +244,8 @@ double CalculateFibLevel(ENUM_TIMEFRAMES tf, bool buy)
    if(CopyHigh(_Symbol, tf, 0, 150, highSeries) < 150) return 0;
    if(CopyLow(_Symbol, tf, 0, 150, lowSeries) < 150) return 0;
    
-   int maxIdx = ArrayMaximum(highSeries, 0, WHOLE_ARRAY);
-   int minIdx = ArrayMinimum(lowSeries, 0, WHOLE_ARRAY);
+   int maxIdx = ArrayMaximum(highSeries, 0, 150);
+   int minIdx = ArrayMinimum(lowSeries, 0, 150);
    if(maxIdx < 0 || minIdx < 0) return 0;
 
    double high = highSeries[maxIdx];
@@ -260,7 +260,7 @@ double CalculateFibLevel(ENUM_TIMEFRAMES tf, bool buy)
 //+------------------------------------------------------------------+
 void ManagePositions()
 {
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   for(int i = 0; i < PositionsTotal(); i++)
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket > 0)
@@ -280,9 +280,9 @@ void ManagePositions()
                double totalProfitPoints = MathAbs(tp - entry);
                double currentProfitPoints = MathAbs(currentPrice - entry);
                
-               if(currentProfitPoints >= totalProfitPoints * InpTriggerLevel)
+               if(currentProfitPoints >= (totalProfitPoints * InpTriggerLevel))
                {
-                  double newSL;
+                  double newSL = 0;
                   if(type == (long)POSITION_TYPE_BUY)
                      newSL = entry + (totalProfitPoints * InpSecureLevel);
                   else
@@ -292,7 +292,7 @@ void ManagePositions()
                   if(type == (long)POSITION_TYPE_BUY && newSL > sl) better = true;
                   if(type == (long)POSITION_TYPE_SELL && (newSL < sl || sl <= 0)) better = true;
 
-                  if(better)
+                  if(better && newSL > 0)
                   {
                      trade.PositionModify(ticket, newSL, tp);
                   }
@@ -308,7 +308,7 @@ void ManagePositions()
 //+------------------------------------------------------------------+
 void UpdateConsecutiveLosses()
 {
-   if(!HistorySelect(TimeCurrent() - 86400 * 3, TimeCurrent())) return;
+   if(!HistorySelect(TimeCurrent() - (86400 * 3), TimeCurrent())) return;
    int totalDeals = HistoryDealsTotal();
    consecutiveLosses = 0;
    
@@ -339,7 +339,10 @@ void UpdateConsecutiveLosses()
 //+------------------------------------------------------------------+
 void CreateDashboard()
 {
-   int x = 10, y = 30, step = 25;
+   int x = 10;
+   int y = 30;
+   int step = 25;
+   
    ObjectCreate(0, lbl_0, OBJ_LABEL, 0, 0, 0);
    ObjectCreate(0, lbl_1, OBJ_LABEL, 0, 0, 0);
    ObjectCreate(0, lbl_2, OBJ_LABEL, 0, 0, 0);
@@ -347,29 +350,27 @@ void CreateDashboard()
    ObjectCreate(0, lbl_4, OBJ_LABEL, 0, 0, 0);
    ObjectCreate(0, lbl_5, OBJ_LABEL, 0, 0, 0);
 
+   string names[6];
+   names[0] = lbl_0; names[1] = lbl_1; names[2] = lbl_2;
+   names[3] = lbl_3; names[4] = lbl_4; names[5] = lbl_5;
+
    for(int i=0; i<6; i++)
    {
-      string name = "";
-      if(i==0) name = lbl_0;
-      if(i==1) name = lbl_1;
-      if(i==2) name = lbl_2;
-      if(i==3) name = lbl_3;
-      if(i==4) name = lbl_4;
-      if(i==5) name = lbl_5;
-
-      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
-      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y + (i * step));
-      ObjectSetInteger(0, name, OBJPROP_COLOR, clrWhite);
-      ObjectSetString(0, name, OBJPROP_FONT, "Arial");
-      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 10);
-      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, names[i], OBJPROP_XDISTANCE, x);
+      ObjectSetInteger(0, names[i], OBJPROP_YDISTANCE, y + (i * step));
+      ObjectSetInteger(0, names[i], OBJPROP_COLOR, clrWhite);
+      ObjectSetString(0, names[i], OBJPROP_FONT, "Arial");
+      ObjectSetInteger(0, names[i], OBJPROP_FONTSIZE, 10);
+      ObjectSetInteger(0, names[i], OBJPROP_SELECTABLE, false);
    }
 }
 
 void UpdateDashboard()
 {
    if(!HistorySelect(TimeCurrent() - 86400, TimeCurrent())) return;
-   int trades = 0, wins = 0, losses = 0;
+   int trades = 0;
+   int wins = 0;
+   int losses = 0;
    
    for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
    {
