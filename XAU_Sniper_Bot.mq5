@@ -5,17 +5,8 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Quant Engineer"
 #property link      "https://www.mql5.com"
-#property version   "1.20"
+#property version   "1.60"
 #property strict
-
-/*
-   SNIPER BOT SPECIFICATIONS:
-   - Strategy: Liquidity Sweep + Fibonacci Retracement
-   - Adaptation: ATR-based Volatility Filter & Market Structure detection
-   - Profit Trap: Moves SL to lock in 30% profit when 50% of TP is reached
-   - Safeguard: Pauses and notifies after X consecutive losses
-   - Dashboard: Real-time stats on Win Rate, Daily Trades, and Status
-*/
 
 //--- Includes
 #include <Trade\Trade.mqh>
@@ -23,24 +14,24 @@
 #include <Trade\SymbolInfo.mqh>
 
 //--- Input Parameters
-input group "=== Risk Management ==="
+//--- Risk Management
 input double   InpLotSize        = 0.1;      // Fixed Lot Size
 input int      InpStopLossPips   = 250;      // Initial Stop Loss (Points)
 input int      InpTakeProfitPips = 750;      // Take Profit (Points)
 input int      InpMaxLosses      = 3;        // Max Consecutive Losses before Pause
 input bool     InpSendPush       = true;     // Send Mobile Notification on Pause
 
-input group "=== Sniper Logic (Liquidity & Fibo) ==="
+//--- Sniper Logic
 input int      InpSwingPeriod    = 15;       // Bars to identify Swing High/Low
 input double   InpFibLevel       = 0.618;    // Fibonacci Retracement Level
 input ENUM_TIMEFRAMES InpFiboTF  = PERIOD_M5;  // Timeframe for Fibonacci Analysis
 input bool     InpUseTrendFilter = true;     // Only trade in direction of H4 Trend
 
-input group "=== Adaptive Settings (Learn & Adapt) ==="
+//--- Adaptive Settings
 input int      InpATRPeriod      = 14;       // ATR Period for volatility filter
-input double   InpMinATR         = 60;       // Minimum ATR (Points) to allow trading (XAUUSD default)
+input double   InpMinATR         = 60;       // Minimum ATR (Points) to allow trading
 
-input group "=== Profit Trap Settings ==="
+//--- Profit Trap Settings
 input double   InpTriggerLevel   = 0.5;      // TP % to trigger profit trap (50%)
 input double   InpSecureLevel    = 0.3;      // % of TP to secure (30%)
 
@@ -54,8 +45,8 @@ string         botName = "XAU Sniper Bot";
 int            magicNumber = 123456;
 
 // Indicator Handles
-int            handleATR;
-int            handleMA_H4;
+int            handleATR = INVALID_HANDLE;
+int            handleMA_H4 = INVALID_HANDLE;
 
 //--- Dashboard Labels
 string labels[] = {"lbl_header", "lbl_winrate", "lbl_trades", "lbl_wins", "lbl_losses", "lbl_status"};
@@ -83,7 +74,7 @@ int OnInit()
    CreateDashboard();
    EventSetTimer(1);
    
-   Print(botName, " V1.20 initialized on ", _Symbol);
+   Print(botName, " V1.60 initialized on ", _Symbol);
    return(INIT_SUCCEEDED);
 }
 
@@ -93,9 +84,9 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   IndicatorRelease(handleATR);
-   IndicatorRelease(handleMA_H4);
-   for(int i=0; i<ArraySize(labels); i++) ObjectDelete(0, labels[i]);
+   if(handleATR != INVALID_HANDLE) IndicatorRelease(handleATR);
+   if(handleMA_H4 != INVALID_HANDLE) IndicatorRelease(handleMA_H4);
+   for(int i=0; i<6; i++) ObjectDelete(0, labels[i]);
 }
 
 //+------------------------------------------------------------------+
@@ -143,8 +134,11 @@ bool PositionExists()
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
-      if(PositionSelectByTicket(ticket) && PositionGetInteger(POSITION_MAGIC) == magicNumber && PositionGetString(POSITION_SYMBOL) == _Symbol)
-         return true;
+      if(PositionSelectByTicket(ticket))
+      {
+         if(PositionGetInteger(POSITION_MAGIC) == magicNumber && PositionGetString(POSITION_SYMBOL) == _Symbol)
+            return true;
+      }
    }
    return false;
 }
@@ -163,7 +157,7 @@ void CheckForSniperEntry()
    if(InpUseTrendFilter)
    {
       double maValue = GetIndicatorValue(handleMA_H4, 0);
-      double closeH4 = iClose(_Symbol, PERIOD_H4, 0);
+      double closeH4 = GetClose(_Symbol, PERIOD_H4, 0);
       trendBullish = (closeH4 > maValue);
    }
 
@@ -177,8 +171,13 @@ void CheckForSniperEntry()
    if(CopyLow(_Symbol, PERIOD_CURRENT, 0, InpSwingPeriod + 1, lowSeries) <= 0) return;
    if(CopyClose(_Symbol, PERIOD_CURRENT, 0, 1, closeSeries) <= 0) return;
 
-   double swingHigh = highSeries[ArrayMaximum(highSeries, 1, InpSwingPeriod)];
-   double swingLow  = lowSeries[ArrayMinimum(lowSeries, 1, InpSwingPeriod)];
+   int maxIdx = ArrayMaximum(highSeries, 1, InpSwingPeriod);
+   int minIdx = ArrayMinimum(lowSeries, 1, InpSwingPeriod);
+   
+   if(maxIdx < 0 || minIdx < 0) return;
+
+   double swingHigh = highSeries[maxIdx];
+   double swingLow  = lowSeries[minIdx];
    
    double currentHigh = highSeries[0];
    double currentLow  = lowSeries[0];
@@ -191,11 +190,12 @@ void CheckForSniperEntry()
    // SNIPE BUY: Sweep Swing Low + Close Above + Fibo Confluence + Bullish Trend
    if(currentLow < swingLow && currentClose > swingLow && trendBullish)
    {
-      if(MathAbs(currentClose - fibPriceBuy) < 150 * _Point) // Within 15 pips of Fibo
+      if(MathAbs(currentClose - fibPriceBuy) < 150 * _Point)
       {
          double sl = currentClose - InpStopLossPips * _Point;
          double tp = currentClose + InpTakeProfitPips * _Point;
-         trade.Buy(InpLotSize, _Symbol, SymbolInfoDouble(_Symbol, SYMBOL_ASK), sl, tp, "Sniper Buy");
+         if(symbolInfo.Update())
+            trade.Buy(InpLotSize, _Symbol, symbolInfo.Ask(), sl, tp, "Sniper Buy");
       }
    }
    
@@ -206,7 +206,8 @@ void CheckForSniperEntry()
       {
          double sl = currentClose + InpStopLossPips * _Point;
          double tp = currentClose - InpTakeProfitPips * _Point;
-         trade.Sell(InpLotSize, _Symbol, SymbolInfoDouble(_Symbol, SYMBOL_BID), sl, tp, "Sniper Sell");
+         if(symbolInfo.Update())
+            trade.Sell(InpLotSize, _Symbol, symbolInfo.Bid(), sl, tp, "Sniper Sell");
       }
    }
 }
@@ -217,7 +218,19 @@ void CheckForSniperEntry()
 double GetIndicatorValue(int handle, int index)
 {
    double buffer[];
+   ArraySetAsSeries(buffer, true);
    if(CopyBuffer(handle, 0, index, 1, buffer) > 0) return buffer[0];
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Get Close Price Helper                                           |
+//+------------------------------------------------------------------+
+double GetClose(string symbol, ENUM_TIMEFRAMES tf, int index)
+{
+   double close[];
+   ArraySetAsSeries(close, true);
+   if(CopyClose(symbol, tf, index, 1, close) > 0) return close[0];
    return 0;
 }
 
@@ -230,8 +243,12 @@ double CalculateFibLevel(ENUM_TIMEFRAMES tf, bool buy)
    if(CopyHigh(_Symbol, tf, 0, 150, highSeries) <= 0) return 0;
    if(CopyLow(_Symbol, tf, 0, 150, lowSeries) <= 0) return 0;
    
-   double high = highSeries[ArrayMaximum(highSeries)];
-   double low  = lowSeries[ArrayMinimum(lowSeries)];
+   int maxIdx = ArrayMaximum(highSeries, 0, WHOLE_ARRAY);
+   int minIdx = ArrayMinimum(lowSeries, 0, WHOLE_ARRAY);
+   if(maxIdx < 0 || minIdx < 0) return 0;
+
+   double high = highSeries[maxIdx];
+   double low  = lowSeries[minIdx];
    
    if(buy) return low + (high - low) * InpFibLevel; 
    else    return high - (high - low) * InpFibLevel; 
@@ -245,34 +262,34 @@ void ManagePositions()
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
-      if(PositionSelectByTicket(ticket) && PositionGetInteger(POSITION_MAGIC) == magicNumber && PositionGetString(POSITION_SYMBOL) == _Symbol)
+      if(PositionSelectByTicket(ticket))
       {
-         double entry = PositionGetDouble(POSITION_PRICE_OPEN);
-         double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-         double sl = PositionGetDouble(POSITION_SL);
-         double tp = PositionGetDouble(POSITION_TP);
-         long type = PositionGetInteger(POSITION_TYPE);
-         
-         if(tp == 0) continue;
-         
-         double totalProfitPoints = MathAbs(tp - entry);
-         double currentProfitPoints = MathAbs(currentPrice - entry);
-         
-         // PROFIT TRAP: If 50% of TP reached
-         if(currentProfitPoints >= totalProfitPoints * InpTriggerLevel)
+         if(PositionGetInteger(POSITION_MAGIC) == magicNumber && PositionGetString(POSITION_SYMBOL) == _Symbol)
          {
-            double newSL;
-            if(type == POSITION_TYPE_BUY)
-               newSL = entry + (totalProfitPoints * InpSecureLevel);
-            else
-               newSL = entry - (totalProfitPoints * InpSecureLevel);
-               
-            // Only move SL if it improves protection
-            if((type == POSITION_TYPE_BUY && newSL > sl) || 
-               (type == POSITION_TYPE_SELL && (newSL < sl || sl == 0)))
+            double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+            double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+            double sl = PositionGetDouble(POSITION_SL);
+            double tp = PositionGetDouble(POSITION_TP);
+            ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+            
+            if(tp == 0) continue;
+            
+            double totalProfitPoints = MathAbs(tp - entry);
+            double currentProfitPoints = MathAbs(currentPrice - entry);
+            
+            if(currentProfitPoints >= totalProfitPoints * InpTriggerLevel)
             {
-               if(trade.PositionModify(ticket, newSL, tp))
-                  Print("Profit Trap: SL moved to secure ", InpSecureLevel*100, "% profit.");
+               double newSL;
+               if(type == POSITION_TYPE_BUY)
+                  newSL = entry + (totalProfitPoints * InpSecureLevel);
+               else
+                  newSL = entry - (totalProfitPoints * InpSecureLevel);
+               
+               if((type == POSITION_TYPE_BUY && newSL > sl) || 
+                  (type == POSITION_TYPE_SELL && (newSL < sl || sl == 0)))
+               {
+                  trade.PositionModify(ticket, newSL, tp);
+               }
             }
          }
       }
@@ -291,14 +308,17 @@ void UpdateConsecutiveLosses()
    for(int i = totalDeals - 1; i >= 0; i--)
    {
       ulong ticket = HistoryDealGetTicket(i);
-      if(HistoryDealGetSymbol(ticket) == _Symbol && HistoryDealGetInteger(ticket, DEAL_MAGIC) == magicNumber)
+      if(HistoryDealSelect(ticket))
       {
-         long entry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
-         if(entry == DEAL_ENTRY_OUT)
+         if(HistoryDealGetSymbol(ticket) == _Symbol && HistoryDealGetInteger(ticket, DEAL_MAGIC) == magicNumber)
          {
-            double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
-            if(profit < 0) consecutiveLosses++;
-            else if(profit > 0) break; // Reset on win
+            ENUM_DEAL_ENTRY entryType = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(ticket, DEAL_ENTRY);
+            if(entryType == DEAL_ENTRY_OUT)
+            {
+               double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
+               if(profit < 0) consecutiveLosses++;
+               else if(profit > 0) break;
+            }
          }
       }
    }
@@ -310,7 +330,7 @@ void UpdateConsecutiveLosses()
 void CreateDashboard()
 {
    int x = 10, y = 30, step = 25;
-   for(int i=0; i<ArraySize(labels); i++)
+   for(int i=0; i<6; i++)
    {
       ObjectCreate(0, labels[i], OBJ_LABEL, 0, 0, 0);
       ObjectSetInteger(0, labels[i], OBJPROP_XDISTANCE, x);
@@ -318,6 +338,7 @@ void CreateDashboard()
       ObjectSetInteger(0, labels[i], OBJPROP_COLOR, clrWhite);
       ObjectSetString(0, labels[i], OBJPROP_FONT, "Trebuchet MS");
       ObjectSetInteger(0, labels[i], OBJPROP_FONTSIZE, 11);
+      ObjectSetInteger(0, labels[i], OBJPROP_SELECTABLE, false);
    }
 }
 
@@ -329,14 +350,17 @@ void UpdateDashboard()
    for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = HistoryDealGetTicket(i);
-      if(HistoryDealGetSymbol(ticket) == _Symbol && HistoryDealGetInteger(ticket, DEAL_MAGIC) == magicNumber)
+      if(HistoryDealSelect(ticket))
       {
-         long entry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
-         if(entry == DEAL_ENTRY_OUT)
+         if(HistoryDealGetSymbol(ticket) == _Symbol && HistoryDealGetInteger(ticket, DEAL_MAGIC) == magicNumber)
          {
-            trades++;
-            if(HistoryDealGetDouble(ticket, DEAL_PROFIT) >= 0) wins++;
-            else losses++;
+            ENUM_DEAL_ENTRY entryType = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(ticket, DEAL_ENTRY);
+            if(entryType == DEAL_ENTRY_OUT)
+            {
+               trades++;
+               if(HistoryDealGetDouble(ticket, DEAL_PROFIT) >= 0) wins++;
+               else losses++;
+            }
          }
       }
    }
